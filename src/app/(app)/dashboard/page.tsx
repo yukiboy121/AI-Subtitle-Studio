@@ -4,10 +4,12 @@ import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   Subtitles, Upload, Search, Plus, MoreHorizontal, Star, Trash2,
-  Edit3, Clock, Grid3X3, List, FileVideo, LogOut, Settings, User,
-  FolderOpen, Archive, Heart, LayoutDashboard, ChevronDown, Menu, X
+  Edit3, Clock, Grid3X3, List, FileVideo, LogOut,
+  FolderOpen, Archive, Heart, LayoutDashboard, Menu, X,
+  Pause, Play, AlertCircle, CheckCircle2, RotateCcw, Film,
+  Replace, Maximize2
 } from "lucide-react";
-import { formatFileSize, formatDuration, truncate } from "@/lib/utils";
+import { formatFileSize, formatDuration } from "@/lib/utils";
 
 interface Project {
   id: string;
@@ -21,6 +23,38 @@ interface Project {
   updatedAt: string;
 }
 
+interface VideoMetadata {
+  duration: number;
+  width: number;
+  height: number;
+  fps: number;
+  codec: string;
+  bitrate: number;
+  thumbnail: string;
+}
+
+interface UploadEntry {
+  id: string;
+  file: File;
+  progress: number;
+  uploadedBytes: number;
+  speed: number;
+  avgSpeed: number;
+  eta: number;
+  status: 'queued' | 'uploading' | 'paused' | 'completed' | 'error';
+  error?: string;
+  validationError?: string;
+  xhr?: XMLHttpRequest;
+  metadata?: VideoMetadata;
+}
+
+const ALLOWED_TYPES = [
+  "video/mp4", "video/quicktime", "video/x-msvideo",
+  "video/x-matroska", "video/webm", "video/mpeg",
+];
+const ALLOWED_EXTENSIONS = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg"];
+const MAX_SIZE = 500 * 1024 * 1024;
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<{ id: string; name: string; email: string; role: string } | null>(null);
@@ -30,8 +64,8 @@ export default function DashboardPage() {
   const [filter, setFilter] = useState<"all" | "favorite" | "archived">("all");
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploads, setUploads] = useState<UploadEntry[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState<string | null>(null);
 
   const fetchProjects = useCallback(async () => {
@@ -58,33 +92,291 @@ export default function DashboardPage() {
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
 
-  const handleUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const file = files[0];
-    setUploading(true);
-    setUploadProgress(0);
+  const extractVideoMetadata = (file: File): Promise<VideoMetadata> => {
+    return new Promise((resolve) => {
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      const url = URL.createObjectURL(file);
+      video.src = url;
 
-    const interval = setInterval(() => {
-      setUploadProgress((p) => Math.min(p + 10, 90));
-    }, 200);
+      video.onloadedmetadata = () => {
+        const duration = video.duration;
+        const width = video.videoWidth;
+        const height = video.videoHeight;
 
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      const data = await res.json();
-      clearInterval(interval);
-      setUploadProgress(100);
-      if (data.project) {
-        setTimeout(() => {
-          setUploading(false);
-          router.push(`/editor/${data.project.id}`);
-        }, 500);
+        video.currentTime = Math.min(duration * 0.25, 5);
+
+        video.onseeked = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = 160;
+          canvas.height = 90;
+          const ctx = canvas.getContext("2d");
+          if (ctx) ctx.drawImage(video, 0, 0, 160, 90);
+          const thumbnail = canvas.toDataURL("image/jpeg", 0.5);
+
+          const bitrate = duration > 0 ? Math.round((file.size * 8) / duration) : 0;
+          const codec = file.type || "video/mp4";
+
+          URL.revokeObjectURL(url);
+          resolve({ duration, width, height, fps: 0, codec, bitrate, thumbnail });
+        };
+
+        video.onerror = () => {
+          URL.revokeObjectURL(url);
+          resolve({ duration: 0, width: 0, height: 0, fps: 0, codec: file.type, bitrate: 0, thumbnail: "" });
+        };
+      };
+
+      video.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve({ duration: 0, width: 0, height: 0, fps: 0, codec: file.type, bitrate: 0, thumbnail: "" });
+      };
+    });
+  };
+
+  const validateFile = (file: File): string | null => {
+    const ext = "." + file.name.split(".").pop()?.toLowerCase();
+    const isTypeValid = ALLOWED_TYPES.includes(file.type) || ALLOWED_EXTENSIONS.includes(ext);
+    if (!isTypeValid) return "Unsupported format. Use MP4, MOV, MKV, AVI, or WebM.";
+    if (file.size > MAX_SIZE) return "File exceeds 500MB limit.";
+    if (file.size === 0) return "File is empty.";
+    return null;
+  };
+
+  const startUpload = (entry: UploadEntry) => {
+    const xhr = new XMLHttpRequest();
+    let startTime = Date.now();
+    let lastLoaded = 0;
+    let lastTime = Date.now();
+
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const now = Date.now();
+      const loaded = e.loaded;
+      const total = e.total;
+      const percent = Math.round((loaded / total) * 100);
+      const elapsed = (now - startTime) / 1000;
+      const timeDiff = (now - lastTime) / 1000;
+      const currentSpeed = timeDiff > 0 ? (loaded - lastLoaded) / timeDiff : 0;
+      const avgSpeed = elapsed > 0 ? loaded / elapsed : 0;
+      const remaining = total - loaded;
+      const eta = avgSpeed > 0 ? remaining / avgSpeed : 0;
+
+      lastLoaded = loaded;
+      lastTime = now;
+
+      setUploads(prev => prev.map(u =>
+        u.id === entry.id ? {
+          ...u,
+          progress: percent,
+          uploadedBytes: loaded,
+          speed: currentSpeed,
+          avgSpeed,
+          eta,
+        } : u
+      ));
+    };
+
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        if (data.project) {
+          setUploads(prev => prev.map(u =>
+            u.id === entry.id ? { ...u, status: "completed", progress: 100 } : u
+          ));
+          setTimeout(() => {
+            setUploads(prev => prev.filter(u => u.id !== entry.id));
+            router.push(`/editor/${data.project.id}`);
+          }, 800);
+        } else {
+          setUploads(prev => prev.map(u =>
+            u.id === entry.id ? { ...u, status: "error", error: data.error || "Upload failed" } : u
+          ));
+        }
+      } catch {
+        setUploads(prev => prev.map(u =>
+          u.id === entry.id ? { ...u, status: "error", error: "Upload failed" } : u
+        ));
       }
-    } catch {
-      clearInterval(interval);
-      setUploading(false);
+    };
+
+    xhr.onerror = () => {
+      setUploads(prev => prev.map(u =>
+        u.id === entry.id ? { ...u, status: "error", error: "Upload failed" } : u
+      ));
+    };
+
+    xhr.onabort = () => {
+      // status already updated by pause/cancel
+    };
+
+    const formData = new FormData();
+    formData.append("file", entry.file);
+    xhr.open("POST", "/api/upload");
+    xhr.send(formData);
+
+    setUploads(prev => prev.map(u =>
+      u.id === entry.id ? { ...u, status: "uploading", progress: 0, uploadedBytes: 0, speed: 0, avgSpeed: 0, eta: 0, xhr, error: undefined } : u
+    ));
+  };
+
+  const addFileToQueue = async (file: File) => {
+    const validationError = validateFile(file);
+    if (validationError) {
+      const entry: UploadEntry = {
+        id: crypto.randomUUID(),
+        file,
+        progress: 0,
+        uploadedBytes: 0,
+        speed: 0,
+        avgSpeed: 0,
+        eta: 0,
+        status: "error",
+        validationError,
+      };
+      setUploads(prev => [...prev, entry]);
+      setTimeout(() => {
+        setUploads(prev => prev.filter(u => u.id === entry.id));
+      }, 5000);
+      return;
     }
+
+    const duplicate = uploads.some(
+      u => u.file.name === file.name && u.file.size === file.size && u.status !== "error"
+    );
+    if (duplicate) return;
+
+    const entry: UploadEntry = {
+      id: crypto.randomUUID(),
+      file,
+      progress: 0,
+      uploadedBytes: 0,
+      speed: 0,
+      avgSpeed: 0,
+      eta: 0,
+      status: "queued",
+    };
+
+    setUploads(prev => [...prev, { ...entry }]);
+
+    const metadata = await extractVideoMetadata(file);
+    setUploads(prev => prev.map(u =>
+      u.id === entry.id ? { ...u, metadata } : u
+    ));
+
+    startUpload({ ...entry, metadata });
+  };
+
+  const handleFileSelect = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    for (let i = 0; i < files.length; i++) {
+      addFileToQueue(files[i]);
+    }
+  };
+
+  const replaceFile = (id: string, file: File) => {
+    const entry = uploads.find(u => u.id === id);
+    if (!entry) return;
+
+    if (entry.xhr) {
+      entry.xhr.abort();
+    }
+
+    setUploads(prev => prev.filter(u => u.id !== id));
+    addFileToQueue(file);
+  };
+
+  const pauseUpload = (id: string) => {
+    const entry = uploads.find(u => u.id === id);
+    if (!entry || !entry.xhr) return;
+
+    entry.xhr.abort();
+    setUploads(prev => prev.map(u =>
+      u.id === id ? { ...u, status: "paused" } : u
+    ));
+  };
+
+  const resumeUpload = (id: string) => {
+    const entry = uploads.find(u => u.id === id);
+    if (!entry) return;
+    const resumed = { ...entry, status: "queued" as const, xhr: undefined };
+    setUploads(prev => prev.map(u => u.id === id ? resumed : u));
+    startUpload(resumed);
+  };
+
+  const cancelUpload = (id: string) => {
+    const entry = uploads.find(u => u.id === id);
+    if (!entry) return;
+
+    if (entry.xhr) {
+      entry.xhr.abort();
+    }
+
+    setUploads(prev => prev.filter(u => u.id !== id));
+  };
+
+  const retryUpload = (id: string) => {
+    const entry = uploads.find(u => u.id === id);
+    if (!entry) return;
+    const retried = { ...entry, status: "queued" as const, xhr: undefined, progress: 0, uploadedBytes: 0, speed: 0, avgSpeed: 0, eta: 0, error: undefined };
+    setUploads(prev => prev.map(u => u.id === id ? retried : u));
+    startUpload(retried);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    const files = e.dataTransfer.files;
+    if (files.length > 0) handleFileSelect(files);
+  };
+
+  const formatBitrate = (bps: number): string => {
+    if (bps === 0) return "N/A";
+    if (bps > 1e6) return (bps / 1e6).toFixed(1) + " Mbps";
+    return Math.round(bps / 1000) + " Kbps";
+  };
+
+  const formatResolution = (w: number, h: number): string => {
+    if (w === 0 || h === 0) return "N/A";
+    return `${w}x${h}`;
+  };
+
+  const codecLabel = (mime: string): string => {
+    if (mime.includes("mp4") || mime.includes("h264") || mime.includes("avc")) return "H.264";
+    if (mime.includes("x-matroska") || mime.includes("mkv")) return "Matroska";
+    if (mime.includes("quicktime") || mime.includes("mov")) return "MOV";
+    if (mime.includes("webm") || mime.includes("vp9") || mime.includes("vp8")) return "VP9";
+    if (mime.includes("msvideo") || mime.includes("avi")) return "AVI";
+    if (mime.includes("mpeg")) return "MPEG";
+    const ext = mime.split("/").pop() || "";
+    return ext.toUpperCase() || "Unknown";
+  };
+
+  const formatSpeed = (bps: number): string => {
+    if (bps <= 0) return "--";
+    if (bps > 1e6) return (bps / 1e6).toFixed(1) + " MB/s";
+    if (bps > 1e3) return Math.round(bps / 1e3) + " KB/s";
+    return Math.round(bps) + " B/s";
+  };
+
+  const formatETA = (seconds: number): string => {
+    if (!isFinite(seconds) || seconds <= 0) return "--";
+    if (seconds < 60) return Math.round(seconds) + "s";
+    if (seconds < 3600) return Math.floor(seconds / 60) + "m " + Math.round(seconds % 60) + "s";
+    return Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m";
   };
 
   const toggleFavorite = async (id: string, current: boolean) => {
@@ -148,7 +440,7 @@ export default function DashboardPage() {
           <label className="w-full py-3 rounded-xl gradient-bg text-white text-sm font-medium flex items-center justify-center gap-2 cursor-pointer hover:opacity-90 transition">
             <Plus className="w-4 h-4" />
             New Project
-            <input type="file" className="hidden" accept="video/*" onChange={(e) => handleUpload(e.target.files)} />
+            <input type="file" className="hidden" accept="video/*" multiple onChange={(e) => { handleFileSelect(e.target.files); if (e.target) e.target.value = ""; }} />
           </label>
         </div>
 
@@ -184,7 +476,12 @@ export default function DashboardPage() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 min-h-screen">
+      <main
+        className="flex-1 min-h-screen relative"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         {/* Top Bar */}
         <header className="sticky top-0 z-30 glass border-b border-white/5 px-4 sm:px-6 py-4">
           <div className="flex items-center gap-4">
@@ -210,22 +507,163 @@ export default function DashboardPage() {
           </div>
         </header>
 
+        {/* Drag overlay */}
+        {isDragOver && (
+          <div className="absolute inset-0 z-50 m-4 rounded-2xl border-2 border-dashed border-indigo-400 bg-indigo-500/10 backdrop-blur-sm flex items-center justify-center">
+            <div className="text-center">
+              <Upload className="w-16 h-16 text-indigo-400 mx-auto mb-4 animate-bounce" />
+              <p className="text-xl font-semibold text-indigo-300">Drop videos here</p>
+              <p className="text-sm text-[var(--muted)] mt-2">MP4, MOV, AVI, MKV, WebM up to 500MB each</p>
+            </div>
+          </div>
+        )}
+
         <div className="p-4 sm:p-6">
-          {/* Upload progress */}
-          {uploading && (
-            <div className="glass rounded-2xl p-6 mb-6">
-              <div className="flex items-center gap-4 mb-3">
-                <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center">
-                  <Upload className="w-5 h-5 text-indigo-400 animate-pulse" />
+          {/* Upload queue */}
+          {uploads.length > 0 && (
+            <div className="space-y-3 mb-6">
+              {uploads.map((entry) => (
+                <div key={entry.id} className="glass rounded-2xl p-4">
+                  <div className="flex items-start gap-4">
+                    {/* Thumbnail */}
+                    <div className={`w-28 h-16 rounded-lg flex-shrink-0 overflow-hidden bg-white/5 ${entry.metadata?.thumbnail ? "" : "flex items-center justify-center"}`}>
+                      {entry.metadata?.thumbnail ? (
+                        <img src={entry.metadata.thumbnail} alt="" className="w-full h-full object-cover" />
+                      ) : entry.validationError ? (
+                        <AlertCircle className="w-6 h-6 text-red-400" />
+                      ) : (
+                        <Film className="w-6 h-6 text-white/30" />
+                      )}
+                    </div>
+
+                    {/* Details */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium truncate max-w-[260px]">{entry.file.name}</div>
+
+                          {/* Validation/error */}
+                          {entry.validationError ? (
+                            <div className="text-xs text-red-400 mt-1">{entry.validationError}</div>
+                          ) : entry.error ? (
+                            <div className="text-xs text-red-400 mt-1">{entry.error}</div>
+                          ) : entry.status === "uploading" ? (
+                            /* Real-time progress stats */
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-xs text-[var(--muted)]">
+                              <span className="text-indigo-400 font-medium">{entry.progress}%</span>
+                              <span>{formatFileSize(entry.uploadedBytes)} / {formatFileSize(entry.file.size)}</span>
+                              <span className="text-green-400/80">{formatSpeed(entry.speed)}</span>
+                              <span className="text-green-400/80">avg {formatSpeed(entry.avgSpeed)}</span>
+                              <span>ETA {formatETA(entry.eta)}</span>
+                            </div>
+                          ) : (
+                            /* Metadata info */
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-xs text-[var(--muted)]">
+                              <span>{formatFileSize(entry.file.size)}</span>
+                              {entry.metadata && entry.metadata.duration > 0 && (
+                                <>
+                                  <span>·</span>
+                                  <span className="flex items-center gap-1">
+                                    <Clock className="w-3 h-3" />
+                                    {formatDuration(entry.metadata.duration)}
+                                  </span>
+                                </>
+                              )}
+                              {entry.metadata && entry.metadata.width > 0 && (
+                                <>
+                                  <span>·</span>
+                                  <span className="flex items-center gap-1">
+                                    <Maximize2 className="w-3 h-3" />
+                                    {formatResolution(entry.metadata.width, entry.metadata.height)}
+                                  </span>
+                                </>
+                              )}
+                              {entry.metadata && entry.metadata.codec !== "video/mp4" && (
+                                <>
+                                  <span>·</span>
+                                  <span>{codecLabel(entry.metadata.codec)}</span>
+                                </>
+                              )}
+                              {entry.metadata && entry.metadata.bitrate > 0 && (
+                                <>
+                                  <span>·</span>
+                                  <span>{formatBitrate(entry.metadata.bitrate)}</span>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Status badge */}
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <span className={`text-xs px-2 py-0.5 rounded-md whitespace-nowrap ${
+                            entry.status === "completed" ? "bg-green-500/20 text-green-400" :
+                            entry.status === "error" ? "bg-red-500/20 text-red-400" :
+                            entry.status === "paused" ? "bg-yellow-500/20 text-yellow-400" :
+                            entry.status === "uploading" ? "bg-indigo-500/20 text-indigo-400" :
+                            "bg-white/5 text-[var(--muted)]"
+                          }`}>
+                            {entry.status === "queued" ? "Queued" :
+                             entry.status === "uploading" ? `${entry.progress}%` :
+                             entry.status === "paused" ? "Paused" :
+                             entry.status === "completed" ? "Done" :
+                             entry.status === "error" ? (entry.validationError ? "Invalid" : "Failed") :
+                             ""}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Real progress bar */}
+                      {(entry.status === "uploading" || entry.status === "paused") && (
+                        <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden mt-2">
+                          <div className={`h-full rounded-full transition-all duration-200 ${
+                            entry.status === "paused" ? "bg-yellow-500/50" : "gradient-bg"
+                          }`} style={{ width: `${entry.progress}%` }} />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {entry.status === "uploading" && (
+                        <button onClick={() => pauseUpload(entry.id)} className="p-2 rounded-lg hover:bg-white/10 text-[var(--muted)] hover:text-yellow-400 transition" title="Pause">
+                          <Pause className="w-4 h-4" />
+                        </button>
+                      )}
+                      {entry.status === "paused" && (
+                        <button onClick={() => resumeUpload(entry.id)} className="p-2 rounded-lg hover:bg-white/10 text-[var(--muted)] hover:text-green-400 transition" title="Resume">
+                          <Play className="w-4 h-4" />
+                        </button>
+                      )}
+                      {entry.status === "error" && !entry.validationError && (
+                        <button onClick={() => retryUpload(entry.id)} className="p-2 rounded-lg hover:bg-white/10 text-[var(--muted)] hover:text-indigo-400 transition" title="Retry">
+                          <RotateCcw className="w-4 h-4" />
+                        </button>
+                      )}
+                      {(entry.status === "queued" || entry.status === "error") && (
+                        <label className="p-2 rounded-lg hover:bg-white/10 text-[var(--muted)] hover:text-blue-400 transition cursor-pointer" title="Replace">
+                          <Replace className="w-4 h-4" />
+                          <input
+                            type="file"
+                            className="hidden"
+                            accept="video/*"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) replaceFile(entry.id, file);
+                              if (e.target) e.target.value = "";
+                            }}
+                          />
+                        </label>
+                      )}
+                      {entry.status !== "completed" && (
+                        <button onClick={() => cancelUpload(entry.id)} className="p-2 rounded-lg hover:bg-white/10 text-[var(--muted)] hover:text-red-400 transition" title="Remove">
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <div className="text-sm font-medium">Uploading video...</div>
-                  <div className="text-xs text-[var(--muted)]">{uploadProgress}%</div>
-                </div>
-              </div>
-              <div className="w-full h-2 rounded-full bg-white/10 overflow-hidden">
-                <div className="h-full gradient-bg rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
-              </div>
+              ))}
             </div>
           )}
 
@@ -240,7 +678,7 @@ export default function DashboardPage() {
               <label className="px-6 py-3 rounded-xl gradient-bg text-white font-medium cursor-pointer hover:opacity-90 transition flex items-center gap-2">
                 <Upload className="w-5 h-5" />
                 Upload Video
-                <input type="file" className="hidden" accept="video/*" onChange={(e) => handleUpload(e.target.files)} />
+                <input type="file" className="hidden" accept="video/*" multiple onChange={(e) => { handleFileSelect(e.target.files); if (e.target) e.target.value = ""; }} />
               </label>
             </div>
           )}
