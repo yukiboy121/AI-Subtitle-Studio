@@ -153,16 +153,13 @@ export default function DashboardPage() {
     return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
   };
 
-  const updateProgress = (entryId: string) => {
-    const entry = uploads.find(u => u.id === entryId);
-    if (!entry) return;
-
+  const updateProgress = (entryId: string, fileSize: number, chunkSize: number) => {
     const completed = completedChunksRef.current.get(entryId)?.size || 0;
-    const uploadedBytes = completed * entry.chunkSize;
-    const percent = Math.round((uploadedBytes / entry.file.size) * 100);
+    const uploadedBytes = completed * chunkSize;
+    const percent = Math.round((uploadedBytes / fileSize) * 100);
     const elapsed = (Date.now() - (uploadStartTimeRef.current.get(entryId) || Date.now())) / 1000;
     const avgSpeed = elapsed > 0 ? uploadedBytes / elapsed : 0;
-    const remaining = entry.file.size - uploadedBytes;
+    const remaining = fileSize - uploadedBytes;
     const eta = avgSpeed > 0 ? remaining / avgSpeed : 0;
 
     setUploads(prev => prev.map(u =>
@@ -183,7 +180,8 @@ export default function DashboardPage() {
     chunkIndex: number,
     checksum: string,
     chunk: Blob,
-    totalBytes: number
+    totalBytes: number,
+    chunkSize: number
   ): Promise<void> => {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -192,19 +190,17 @@ export default function DashboardPage() {
 
       xhr.upload.onprogress = (e) => {
         if (!e.lengthComputable) return;
-        const entry = uploads.find(u => u.id === entryId);
-        if (!entry) return;
         const completed = completedChunksRef.current.get(entryId)?.size || 0;
-        const uploadedBytes = completed * entry.chunkSize + e.loaded;
+        const uploadedBytes = completed * chunkSize + e.loaded;
         const percent = Math.round((uploadedBytes / totalBytes) * 100);
         const now = Date.now();
         const elapsed = (now - (uploadStartTimeRef.current.get(entryId) || now)) / 1000;
         const timeDiff = (now - chunkStart) / 1000;
-        const currentSpeed = timeDiff > 0 ? (completed * entry.chunkSize + e.loaded - lastLoaded) / timeDiff : 0;
+        const currentSpeed = timeDiff > 0 ? (completed * chunkSize + e.loaded - lastLoaded) / timeDiff : 0;
         const avgSpeed = elapsed > 0 ? uploadedBytes / elapsed : 0;
         const remaining = totalBytes - uploadedBytes;
         const eta = avgSpeed > 0 ? remaining / avgSpeed : 0;
-        lastLoaded = completed * entry.chunkSize + e.loaded;
+        lastLoaded = completed * chunkSize + e.loaded;
 
         setUploads(prev => prev.map(u =>
           u.id === entryId ? {
@@ -244,12 +240,14 @@ export default function DashboardPage() {
     });
   };
 
-  const uploadAllChunks = async (entryId: string) => {
-    const entry = uploads.find(u => u.id === entryId);
-    if (!entry || !entry.uploadId) return;
-
+  const uploadAllChunks = async (
+    entryId: string,
+    uploadId: string,
+    file: File,
+    chunkSize: number,
+    totalChunks: number
+  ) => {
     uploadActiveRef.current.set(entryId, true);
-    const { uploadId, file, chunkSize, totalChunks } = entry;
 
     if (!completedChunksRef.current.has(entryId)) {
       completedChunksRef.current.set(entryId, new Set());
@@ -274,14 +272,13 @@ export default function DashboardPage() {
         return;
       }
 
-      const currentEntry = uploads.find(u => u.id === entryId);
-      if (!currentEntry || currentEntry.status === "paused" || !uploadActiveRef.current.get(entryId)) break;
+      if (!uploadActiveRef.current.get(entryId)) break;
 
       let success = false;
       for (let attempt = 0; attempt < 3; attempt++) {
         if (!uploadActiveRef.current.get(entryId)) break;
         try {
-          await uploadSingleChunk(entryId, uploadId, i, checksum, chunk, file.size);
+          await uploadSingleChunk(entryId, uploadId, i, checksum, chunk, file.size, chunkSize);
           success = true;
           break;
         } catch (err: any) {
@@ -302,7 +299,7 @@ export default function DashboardPage() {
 
       if (success) {
         completedSet.add(i);
-        updateProgress(entryId);
+        updateProgress(entryId, file.size, chunkSize);
       }
     }
 
@@ -414,7 +411,7 @@ export default function DashboardPage() {
       } : u
     ));
 
-    uploadAllChunks(entry.id);
+    uploadAllChunks(entry.id, uploadId!, entry.file, chunkSize!, totalChunks!);
   };
 
   const addFileToQueue = async (file: File) => {
