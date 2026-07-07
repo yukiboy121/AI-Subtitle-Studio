@@ -54,7 +54,7 @@ interface UploadEntry {
 }
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg"];
-const CHUNK_SIZE = 4 * 1024 * 1024;
+const CHUNK_SIZE = 1 * 1024 * 1024;
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -293,7 +293,7 @@ export default function DashboardPage() {
           }
           if (attempt === 2) {
             setUploads(prev => prev.map(u =>
-              u.id === entryId ? { ...u, status: "error", error: `Chunk ${i + 1}/${totalChunks} failed after 3 attempts` } : u
+              u.id === entryId ? { ...u, status: "error", error: `Chunk ${i + 1}/${totalChunks} failed: ${err?.message || "Unknown error"}` } : u
             ));
             uploadActiveRef.current.set(entryId, false);
             return;

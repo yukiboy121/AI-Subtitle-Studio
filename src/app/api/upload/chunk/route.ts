@@ -16,10 +16,14 @@ export async function POST(req: NextRequest) {
     const uploadId = formData.get("uploadId") as string;
     const chunkIndexStr = formData.get("chunkIndex") as string;
     const checksum = formData.get("checksum") as string;
-    const chunk = formData.get("chunk") as File;
+    const chunk = formData.get("chunk");
 
     if (!uploadId || chunkIndexStr == null || !checksum || !chunk) {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    }
+    
+    if (typeof chunk === "string") {
+      return NextResponse.json({ error: "Chunk was parsed as a string, expected a File/Blob" }, { status: 400 });
     }
 
     const chunkIndex = parseInt(chunkIndexStr);
@@ -30,7 +34,7 @@ export async function POST(req: NextRequest) {
     try {
       meta = JSON.parse(await readFile(metaPath, "utf-8"));
     } catch {
-      return NextResponse.json({ error: "Upload session not found" }, { status: 404 });
+      return NextResponse.json({ error: "Upload session not found (meta.json missing)" }, { status: 404 });
     }
 
     if (meta.userId !== session.userId) {
@@ -63,6 +67,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, chunkIndex });
   } catch (error) {
     console.error("Chunk upload error:", error);
-    return NextResponse.json({ error: "Chunk upload failed" }, { status: 500 });
+    const msg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: `Chunk upload failed: ${msg}` }, { status: 500 });
   }
 }
