@@ -3,8 +3,9 @@ import { getSession } from "@/lib/auth";
 import { writeFile, readFile } from "fs/promises";
 import path from "path";
 import crypto from "crypto";
+import { getUploadsDir } from "@/lib/upload-path";
 
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+const UPLOADS_DIR = getUploadsDir();
 
 export async function POST(req: NextRequest) {
   try {

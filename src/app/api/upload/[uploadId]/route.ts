@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { readFile, rm } from "fs/promises";
 import path from "path";
+import { getUploadsDir } from "@/lib/upload-path";
 
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+const UPLOADS_DIR = getUploadsDir();
 
 export async function GET(
   req: NextRequest,

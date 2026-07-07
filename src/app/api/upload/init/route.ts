@@ -3,8 +3,9 @@ import { getSession } from "@/lib/auth";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
+import { getUploadsDir } from "@/lib/upload-path";
 
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+const UPLOADS_DIR = getUploadsDir();
 const CHUNK_SIZE = 5 * 1024 * 1024;
 const ALLOWED_TYPES = [
   "video/mp4", "video/quicktime", "video/x-msvideo",

@@ -5,8 +5,9 @@ import { projects, videos, subtitleTracks, subtitleStyles } from "@/db/schema";
 import { readFile, readdir, unlink, rm, appendFile } from "fs/promises";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
+import { getUploadsDir } from "@/lib/upload-path";
 
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+const UPLOADS_DIR = getUploadsDir();
 
 export async function POST(
   req: NextRequest,

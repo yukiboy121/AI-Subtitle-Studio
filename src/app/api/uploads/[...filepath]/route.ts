@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFile, stat } from "fs/promises";
 import nodepath from "path";
+import { getUploadsDir } from "@/lib/upload-path";
+
+const UPLOADS_DIR = getUploadsDir();
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ filepath: string[] }> }) {
   try {
     const { filepath } = await params;
-    const filePath = nodepath.join(process.cwd(), "uploads", ...filepath);
+    const filePath = nodepath.join(UPLOADS_DIR, ...filepath);
 
     const resolved = nodepath.resolve(filePath);
-    if (!resolved.startsWith(nodepath.resolve(process.cwd(), "uploads"))) {
+    if (!resolved.startsWith(nodepath.resolve(UPLOADS_DIR))) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

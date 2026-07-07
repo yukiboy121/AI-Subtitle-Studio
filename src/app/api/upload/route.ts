@@ -5,8 +5,9 @@ import { getSession } from "@/lib/auth";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
+import { getUploadsDir } from "@/lib/upload-path";
 
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+const UPLOADS_DIR = getUploadsDir();
 const ALLOWED_TYPES = [
   "video/mp4",
   "video/quicktime",
