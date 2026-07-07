@@ -78,9 +78,22 @@ export default function DashboardPage() {
       if (search) params.set("search", search);
       if (filter === "favorite") params.set("favorite", "true");
       if (filter === "archived") params.set("archived", "true");
+
+      const cacheKey = `dashboard_projects_${search}_${filter}`;
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        try {
+          setProjects(JSON.parse(cached));
+          setLoading(false);
+        } catch (e) {}
+      }
+
       const res = await fetch(`/api/projects?${params}`);
       const data = await res.json();
-      if (data.projects) setProjects(data.projects);
+      if (data.projects) {
+        setProjects(data.projects);
+        localStorage.setItem(cacheKey, JSON.stringify(data.projects));
+      }
     } catch {
     } finally {
       setLoading(false);

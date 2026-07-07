@@ -109,6 +109,23 @@ export default function EditorPage() {
   // Load project data
   useEffect(() => {
     if (!id) return;
+    
+    // 1. Try to load from Local Storage for instant loading
+    const cachedData = localStorage.getItem(`project_cache_${id}`);
+    if (cachedData) {
+      try {
+        const parsed = JSON.parse(cachedData);
+        if (parsed.project) setProject(parsed.project);
+        if (parsed.video) setVideo(parsed.video);
+        if (parsed.subtitles) setSubtitlesList(parsed.subtitles);
+        if (parsed.style) setStyle(parsed.style);
+        setLoading(false);
+      } catch (e) {
+        console.error("Cache parsing error", e);
+      }
+    }
+
+    // 2. Fetch fresh data from the server
     fetch(`/api/projects/${id}`)
       .then((r) => r.json())
       .then((data) => {
@@ -118,6 +135,19 @@ export default function EditorPage() {
           const sorted = data.subtitles.sort((a: SubtitleItem, b: SubtitleItem) => a.startTime - b.startTime);
           setSubtitlesList(sorted);
         }
+        
+        // Save fresh data back to cache
+        try {
+          localStorage.setItem(`project_cache_${id}`, JSON.stringify({
+            project: data.project,
+            video: data.videos?.[0],
+            subtitles: data.subtitles?.sort((a: SubtitleItem, b: SubtitleItem) => a.startTime - b.startTime),
+            style: style,
+          }));
+        } catch (e) {
+          console.error("Failed to save cache", e);
+        }
+        
         setLoading(false);
       })
       .catch(() => { setLoading(false); });
@@ -189,13 +219,23 @@ export default function EditorPage() {
   const saveSubtitles = useCallback(async () => {
     if (!id) return;
     try {
+      // Optimistically update local cache
+      const cachedData = localStorage.getItem(`project_cache_${id}`);
+      if (cachedData) {
+        const parsed = JSON.parse(cachedData);
+        parsed.subtitles = subtitlesList;
+        localStorage.setItem(`project_cache_${id}`, JSON.stringify(parsed));
+      } else {
+        localStorage.setItem(`project_cache_${id}`, JSON.stringify({ project, video, subtitles: subtitlesList, style }));
+      }
+
       await fetch(`/api/projects/${id}/subtitles`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ subtitles: subtitlesList }),
       });
     } catch { }
-  }, [id, subtitlesList]);
+  }, [id, subtitlesList, project, video, style]);
 
   const addSubtitle = () => {
     pushUndo();
