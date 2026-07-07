@@ -80,6 +80,10 @@ export async function POST(
 
     // Send to Hugging Face Whisper API
     // Using whisper-large-v3 for best multilingual/Sinhala support
+    // Convert Node Buffer to a Web Blob to ensure fetch compatibility
+    const uint8Array = new Uint8Array(fileBuffer);
+    const blob = new Blob([uint8Array]);
+
     const hfResponse = await fetch(
       "https://api-inference.huggingface.co/models/openai/whisper-large-v3",
       {
@@ -88,7 +92,7 @@ export async function POST(
           Authorization: `Bearer ${hfApiKey}`,
           "Content-Type": "application/octet-stream",
         },
-        body: fileBuffer as any,
+        body: blob,
       }
     );
 
