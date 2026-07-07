@@ -16,7 +16,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ file
     }
 
     const fileStat = await stat(resolved);
-    const fileBuffer = await readFile(resolved);
+    const fileSize = fileStat.size;
 
     const ext = nodepath.extname(resolved).toLowerCase();
     const mimeTypes: Record<string, string> = {
@@ -31,11 +31,35 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ file
       ".jpg": "image/jpeg",
       ".jpeg": "image/jpeg",
     };
+    
+    const contentType = mimeTypes[ext] || "application/octet-stream";
+    const range = req.headers.get("range");
 
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunksize = (end - start) + 1;
+
+      const fileBuffer = await readFile(resolved);
+      const chunk = fileBuffer.subarray(start, end + 1);
+
+      return new NextResponse(chunk, {
+        status: 206,
+        headers: {
+          "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": chunksize.toString(),
+          "Content-Type": contentType,
+        },
+      });
+    }
+
+    const fileBuffer = await readFile(resolved);
     return new NextResponse(fileBuffer, {
       headers: {
-        "Content-Type": mimeTypes[ext] || "application/octet-stream",
-        "Content-Length": fileStat.size.toString(),
+        "Content-Type": contentType,
+        "Content-Length": fileSize.toString(),
         "Accept-Ranges": "bytes",
       },
     });

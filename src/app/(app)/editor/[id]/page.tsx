@@ -438,16 +438,16 @@ export default function EditorPage() {
       </header>
 
       {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden min-h-0">
         {/* Video Preview */}
-        <div className="flex-1 flex flex-col">
-          <div className="flex-1 relative bg-black flex items-center justify-center p-4">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+          <div className="flex-1 relative bg-black flex items-center justify-center p-4 min-h-0 min-w-0">
             {video ? (
-              <div className="relative w-full h-full flex items-center justify-center">
+              <div className="relative w-full h-full flex items-center justify-center min-h-0 min-w-0">
                 <video
                   ref={videoRef}
                   src={video.path}
-                  className="max-w-full max-h-full rounded-lg"
+                  className="max-w-full max-h-full object-contain rounded-lg"
                   onClick={togglePlay}
                 />
                 {/* Subtitle overlay */}
