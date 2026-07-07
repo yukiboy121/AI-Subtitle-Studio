@@ -220,43 +220,73 @@ export default function EditorPage() {
     setSubtitlesList((prev) => prev.map((s) => (s.id === subId ? { ...s, [field]: value } : s)));
   };
 
+  const [generateStatus, setGenerateStatus] = useState("");
+
   const autoGenerateSinhala = async () => {
-    if (!duration) return;
+    if (!id) return;
     setIsGenerating(true);
+    setGenerateStatus("🎙️ Sending audio to AI...");
     pushUndo();
-    
-    // Simulate AI processing delay
-    await new Promise(r => setTimeout(r, Math.min(duration * 100, 3000)));
 
-    const newSubs: SubtitleItem[] = [];
-    let currentTimeStamp = 0;
-    let index = 0;
-    
-    // Sample Sinhala placeholders
-    const samples = [
-      "මෙය ස්වයංක්‍රීයව ජනනය වූ උපසිරැසියකි",
-      "කෘතිම බුද්ධිය මගින් හඳුනාගත් පෙළ",
-      "ඔබේ වීඩියෝවේ හඬ මෙහි දිස්වේ",
-      "කරුණාකර මෙය සංස්කරණය කරන්න"
-    ];
+    const maxRetries = 3;
+    let attempt = 0;
 
-    while (currentTimeStamp < duration) {
-      const nextTime = Math.min(currentTimeStamp + 3, duration);
-      if (nextTime - currentTimeStamp > 0.5) {
-        newSubs.push({
-          id: crypto.randomUUID(),
-          trackId: "",
-          index,
-          startTime: currentTimeStamp,
-          endTime: nextTime,
-          text: samples[index % samples.length],
+    while (attempt < maxRetries) {
+      try {
+        const res = await fetch(`/api/projects/${id}/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ language: "sinhalese" }),
         });
-        index++;
+
+        const data = await res.json();
+
+        // If model is loading, wait and retry
+        if (res.status === 503 && data.loading) {
+          attempt++;
+          setGenerateStatus(`⏳ AI model loading... retrying (${attempt}/${maxRetries})`);
+          await new Promise(r => setTimeout(r, 15000));
+          continue;
+        }
+
+        if (!res.ok) {
+          setGenerateStatus(`❌ ${data.error || "Generation failed"}`);
+          setIsGenerating(false);
+          return;
+        }
+
+        if (data.subtitles && data.subtitles.length > 0) {
+          const newSubs: SubtitleItem[] = data.subtitles.map(
+            (sub: { startTime: number; endTime: number; text: string }, i: number) => ({
+              id: crypto.randomUUID(),
+              trackId: "",
+              index: i,
+              startTime: sub.startTime,
+              endTime: sub.endTime,
+              text: sub.text,
+            })
+          );
+          setSubtitlesList(newSubs);
+          setGenerateStatus(`✅ ${newSubs.length} subtitles generated!`);
+          setTimeout(() => setGenerateStatus(""), 3000);
+        } else {
+          setGenerateStatus("❌ No speech detected in the audio.");
+        }
+
+        setIsGenerating(false);
+        return;
+      } catch (err: any) {
+        attempt++;
+        if (attempt >= maxRetries) {
+          setGenerateStatus(`❌ ${err?.message || "Network error"}`);
+          setIsGenerating(false);
+          return;
+        }
+        setGenerateStatus(`⚠️ Retrying... (${attempt}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, 5000));
       }
-      currentTimeStamp = nextTime + 0.1; // gap
     }
 
-    setSubtitlesList(newSubs);
     setIsGenerating(false);
   };
 
@@ -573,17 +603,28 @@ export default function EditorPage() {
           {/* Subtitles Tab */}
           {activeTab === "subtitles" && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="p-3 border-b border-white/5 flex items-center gap-2 flex-shrink-0">
-                <button onClick={addSubtitle} className="flex-1 py-2 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium flex items-center justify-center gap-1 hover:bg-indigo-500/30 transition">
-                  <Plus className="w-3.5 h-3.5" /> Add
-                </button>
-                <button onClick={autoGenerateSinhala} disabled={isGenerating} className="flex-1 py-2 rounded-lg gradient-bg text-white text-xs font-medium flex items-center justify-center gap-1 hover:opacity-90 transition disabled:opacity-50">
-                  {isGenerating ? <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                  Auto (SI)
-                </button>
-                <button onClick={() => setShowSearch(!showSearch)} className="p-2 rounded-lg hover:bg-white/5 transition">
-                  <Search className="w-3.5 h-3.5 text-[var(--muted)]" />
-                </button>
+              <div className="p-3 border-b border-white/5 flex flex-col gap-2 flex-shrink-0">
+                <div className="flex items-center gap-2">
+                  <button onClick={addSubtitle} className="flex-1 py-2 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium flex items-center justify-center gap-1 hover:bg-indigo-500/30 transition">
+                    <Plus className="w-3.5 h-3.5" /> Add
+                  </button>
+                  <button onClick={autoGenerateSinhala} disabled={isGenerating} className="flex-1 py-2 rounded-lg gradient-bg text-white text-xs font-medium flex items-center justify-center gap-1 hover:opacity-90 transition disabled:opacity-50">
+                    {isGenerating ? <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                    Auto (SI)
+                  </button>
+                  <button onClick={() => setShowSearch(!showSearch)} className="p-2 rounded-lg hover:bg-white/5 transition">
+                    <Search className="w-3.5 h-3.5 text-[var(--muted)]" />
+                  </button>
+                </div>
+                {generateStatus && (
+                  <div className={`text-[11px] px-2 py-1.5 rounded-lg ${
+                    generateStatus.startsWith("✅") ? "bg-green-500/10 text-green-400" :
+                    generateStatus.startsWith("❌") ? "bg-red-500/10 text-red-400" :
+                    "bg-indigo-500/10 text-indigo-300"
+                  }`}>
+                    {generateStatus}
+                  </div>
+                )}
               </div>
               {showSearch && (
                 <div className="p-3 border-b border-white/5 space-y-2 flex-shrink-0">
