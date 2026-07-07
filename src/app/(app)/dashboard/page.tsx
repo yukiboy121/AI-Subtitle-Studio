@@ -218,7 +218,12 @@ export default function DashboardPage() {
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve();
         } else {
-          reject(new Error("Chunk upload failed"));
+          let serverMsg = `HTTP ${xhr.status}`;
+          try {
+            const resp = JSON.parse(xhr.responseText);
+            if (resp.error) serverMsg = resp.error;
+          } catch {}
+          reject(new Error(serverMsg));
         }
       };
 

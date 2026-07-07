@@ -42,6 +42,7 @@ export async function POST(req: NextRequest) {
     const uploadDir = path.join(UPLOADS_DIR, session.userId, uploadId);
 
     try {
+      await mkdir(UPLOADS_DIR, { recursive: true });
       await mkdir(path.join(uploadDir, "chunks"), { recursive: true });
     } catch (err: any) {
       return NextResponse.json({ error: `Failed to create upload directory: ${err.message}` }, { status: 500 });
