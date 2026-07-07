@@ -54,7 +54,7 @@ interface UploadEntry {
 }
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg"];
-const CHUNK_SIZE = 5 * 1024 * 1024;
+const CHUNK_SIZE = 4 * 1024 * 1024;
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -234,7 +234,7 @@ export default function DashboardPage() {
       formData.append("uploadId", uploadId);
       formData.append("chunkIndex", chunkIndex.toString());
       formData.append("checksum", checksum);
-      formData.append("chunk", chunk);
+      formData.append("chunk", chunk, "chunk.blob");
 
       xhr.open("POST", "/api/upload/chunk");
       xhr.send(formData);
@@ -790,6 +790,7 @@ export default function DashboardPage() {
                   <div className="flex items-start gap-4">
                     <div className={`w-28 h-16 rounded-lg flex-shrink-0 overflow-hidden bg-white/5 ${entry.metadata?.thumbnail ? "" : "flex items-center justify-center"}`}>
                       {entry.metadata?.thumbnail ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
                         <img src={entry.metadata.thumbnail} alt="" className="w-full h-full object-cover" />
                       ) : entry.validationError ? (
                         <AlertCircle className="w-6 h-6 text-red-400" />

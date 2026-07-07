@@ -142,49 +142,26 @@ export default function EditorPage() {
     };
   }, [video]);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).tagName === "INPUT" || (e.target as HTMLElement).tagName === "TEXTAREA") return;
-      if (e.code === "Space") { e.preventDefault(); togglePlay(); }
-      if (e.ctrlKey && e.key === "z") { e.preventDefault(); undo(); }
-      if (e.ctrlKey && e.key === "y") { e.preventDefault(); redo(); }
-      if (e.ctrlKey && e.key === "s") { e.preventDefault(); saveSubtitles(); }
-      if (e.key === "ArrowLeft") { e.preventDefault(); seek(-5); }
-      if (e.key === "ArrowRight") { e.preventDefault(); seek(5); }
-      if (e.key === "Delete" && selectedId) { e.preventDefault(); deleteSubtitle(selectedId); }
-    };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  });
-
-  // Auto-save
-  useEffect(() => {
-    if (subtitlesList.length === 0) return;
-    const timer = setTimeout(() => { saveSubtitles(); }, 5000);
-    return () => clearTimeout(timer);
-  }, [subtitlesList]);
-
-  const pushUndo = useCallback(() => {
+  const pushUndo = () => {
     setUndoStack((prev) => [...prev.slice(-20), [...subtitlesList]]);
     setRedoStack([]);
-  }, [subtitlesList]);
+  };
 
-  const undo = useCallback(() => {
+  const undo = () => {
     if (undoStack.length === 0) return;
     setRedoStack((prev) => [...prev, [...subtitlesList]]);
     const prev = undoStack[undoStack.length - 1];
     setSubtitlesList(prev);
     setUndoStack((stack) => stack.slice(0, -1));
-  }, [undoStack, subtitlesList]);
+  };
 
-  const redo = useCallback(() => {
+  const redo = () => {
     if (redoStack.length === 0) return;
     setUndoStack((prev) => [...prev, [...subtitlesList]]);
     const next = redoStack[redoStack.length - 1];
     setSubtitlesList(next);
     setRedoStack((stack) => stack.slice(0, -1));
-  }, [redoStack, subtitlesList]);
+  };
 
   const togglePlay = () => {
     const vid = videoRef.current;
@@ -208,7 +185,7 @@ export default function EditorPage() {
     return subtitlesList.find((s) => currentTime >= s.startTime && currentTime <= s.endTime);
   };
 
-  const saveSubtitles = async () => {
+  const saveSubtitles = useCallback(async () => {
     if (!id) return;
     try {
       await fetch(`/api/projects/${id}/subtitles`, {
@@ -217,12 +194,12 @@ export default function EditorPage() {
         body: JSON.stringify({ subtitles: subtitlesList }),
       });
     } catch { }
-  };
+  }, [id, subtitlesList]);
 
   const addSubtitle = () => {
     pushUndo();
     const newSub: SubtitleItem = {
-      id: `temp-${Date.now()}`,
+      id: crypto.randomUUID(),
       trackId: "",
       index: subtitlesList.length,
       startTime: currentTime,
@@ -258,7 +235,7 @@ export default function EditorPage() {
     const first: SubtitleItem = { ...sub, endTime: midTime, text: words.slice(0, mid).join(" ") };
     const second: SubtitleItem = {
       ...sub,
-      id: `temp-${Date.now()}`,
+      id: crypto.randomUUID(),
       startTime: midTime,
       text: words.slice(mid).join(" "),
     };
@@ -273,7 +250,7 @@ export default function EditorPage() {
     if (!sub) return;
     const newSub: SubtitleItem = {
       ...sub,
-      id: `temp-${Date.now()}`,
+      id: crypto.randomUUID(),
       startTime: sub.endTime + 0.1,
       endTime: sub.endTime + (sub.endTime - sub.startTime) + 0.1,
     };
@@ -318,6 +295,29 @@ export default function EditorPage() {
       setStyle((prev) => ({ ...prev, ...template }));
     }
   };
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === "INPUT" || (e.target as HTMLElement).tagName === "TEXTAREA") return;
+      if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+      if (e.ctrlKey && e.key === "z") { e.preventDefault(); undo(); }
+      if (e.ctrlKey && e.key === "y") { e.preventDefault(); redo(); }
+      if (e.ctrlKey && e.key === "s") { e.preventDefault(); saveSubtitles(); }
+      if (e.key === "ArrowLeft") { e.preventDefault(); seek(-5); }
+      if (e.key === "ArrowRight") { e.preventDefault(); seek(5); }
+      if (e.key === "Delete" && selectedId) { e.preventDefault(); deleteSubtitle(selectedId); }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  });
+
+  // Auto-save
+  useEffect(() => {
+    if (subtitlesList.length === 0) return;
+    const timer = setTimeout(() => { saveSubtitles(); }, 5000);
+    return () => clearTimeout(timer);
+  }, [subtitlesList, saveSubtitles]);
 
   const currentSub = getCurrentSubtitle();
 

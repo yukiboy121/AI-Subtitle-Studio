@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getUploadsDir } from "@/lib/upload-path";
 
 const UPLOADS_DIR = getUploadsDir();
-const CHUNK_SIZE = 5 * 1024 * 1024;
+const CHUNK_SIZE = 4 * 1024 * 1024;
 const ALLOWED_TYPES = [
   "video/mp4", "video/quicktime", "video/x-msvideo",
   "video/x-matroska", "video/webm", "video/mpeg",
