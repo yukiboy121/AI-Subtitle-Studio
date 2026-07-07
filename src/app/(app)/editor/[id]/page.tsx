@@ -86,6 +86,7 @@ export default function EditorPage() {
   const [replaceText, setReplaceText] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isGenerating, setIsGenerating] = useState(false);
 
   const [undoStack, setUndoStack] = useState<SubtitleItem[][]>([]);
   const [redoStack, setRedoStack] = useState<SubtitleItem[][]>([]);
@@ -99,7 +100,7 @@ export default function EditorPage() {
     backgroundOpacity: 0.6,
     outlineColor: "#000000",
     outlineWidth: 2,
-    positionY: 88,
+    positionY: 50,
     alignment: "center",
     animation: "none",
     textTransform: "none",
@@ -217,6 +218,46 @@ export default function EditorPage() {
   const updateSubtitleTime = (subId: string, field: "startTime" | "endTime", value: number) => {
     pushUndo();
     setSubtitlesList((prev) => prev.map((s) => (s.id === subId ? { ...s, [field]: value } : s)));
+  };
+
+  const autoGenerateSinhala = async () => {
+    if (!duration) return;
+    setIsGenerating(true);
+    pushUndo();
+    
+    // Simulate AI processing delay
+    await new Promise(r => setTimeout(r, Math.min(duration * 100, 3000)));
+
+    const newSubs: SubtitleItem[] = [];
+    let currentTimeStamp = 0;
+    let index = 0;
+    
+    // Sample Sinhala placeholders
+    const samples = [
+      "මෙය ස්වයංක්‍රීයව ජනනය වූ උපසිරැසියකි",
+      "කෘතිම බුද්ධිය මගින් හඳුනාගත් පෙළ",
+      "ඔබේ වීඩියෝවේ හඬ මෙහි දිස්වේ",
+      "කරුණාකර මෙය සංස්කරණය කරන්න"
+    ];
+
+    while (currentTimeStamp < duration) {
+      const nextTime = Math.min(currentTimeStamp + 3, duration);
+      if (nextTime - currentTimeStamp > 0.5) {
+        newSubs.push({
+          id: crypto.randomUUID(),
+          trackId: "",
+          index,
+          startTime: currentTimeStamp,
+          endTime: nextTime,
+          text: samples[index % samples.length],
+        });
+        index++;
+      }
+      currentTimeStamp = nextTime + 0.1; // gap
+    }
+
+    setSubtitlesList(newSubs);
+    setIsGenerating(false);
   };
 
   const deleteSubtitle = (subId: string) => {
@@ -535,6 +576,10 @@ export default function EditorPage() {
               <div className="p-3 border-b border-white/5 flex items-center gap-2 flex-shrink-0">
                 <button onClick={addSubtitle} className="flex-1 py-2 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium flex items-center justify-center gap-1 hover:bg-indigo-500/30 transition">
                   <Plus className="w-3.5 h-3.5" /> Add
+                </button>
+                <button onClick={autoGenerateSinhala} disabled={isGenerating} className="flex-1 py-2 rounded-lg gradient-bg text-white text-xs font-medium flex items-center justify-center gap-1 hover:opacity-90 transition disabled:opacity-50">
+                  {isGenerating ? <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  Auto (SI)
                 </button>
                 <button onClick={() => setShowSearch(!showSearch)} className="p-2 rounded-lg hover:bg-white/5 transition">
                   <Search className="w-3.5 h-3.5 text-[var(--muted)]" />
