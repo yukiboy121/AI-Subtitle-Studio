@@ -69,6 +69,14 @@ export async function POST(
     // For larger files, we'll try anyway as HF may handle it
     const fileSizeMB = fileBuffer.length / (1024 * 1024);
     
+    // Hugging Face strictly drops connections for files > 25-30MB, causing "fetch failed"
+    if (fileSizeMB > 25) {
+      return NextResponse.json(
+        { error: `Video file is too large (${fileSizeMB.toFixed(1)}MB). The free AI API supports files up to 25MB. Please upload a smaller video or an audio-only file.` },
+        { status: 413 }
+      );
+    }
+    
     // Parse request body for language preference
     let language = "sinhalese";
     try {
@@ -168,9 +176,12 @@ export async function POST(
       language,
       totalSegments: subtitleItems.length,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Generate subtitles error:", error);
-    const msg = error instanceof Error ? error.message : String(error);
+    let msg = error instanceof Error ? error.message : String(error);
+    if (error.cause) {
+      msg += ` (Cause: ${error.cause.message || String(error.cause)})`;
+    }
     return NextResponse.json(
       { error: `Subtitle generation failed: ${msg}` },
       { status: 500 }
