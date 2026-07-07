@@ -88,7 +88,7 @@ export async function POST(
           Authorization: `Bearer ${hfApiKey}`,
           "Content-Type": "application/octet-stream",
         },
-        body: fileBuffer,
+        body: new Blob([fileBuffer]),
       }
     );
 
