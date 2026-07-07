@@ -6,13 +6,24 @@ import { v4 as uuidv4 } from "uuid";
 
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
 const CHUNK_SIZE = 5 * 1024 * 1024;
+const ALLOWED_TYPES = [
+  "video/mp4", "video/quicktime", "video/x-msvideo",
+  "video/x-matroska", "video/webm", "video/mpeg",
+];
 
 export async function POST(req: NextRequest) {
   try {
     const session = await getSession();
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const { fileName, fileSize, fileType } = await req.json();
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const { fileName, fileSize, fileType } = body;
 
     if (!fileName || fileSize == null) {
       return NextResponse.json({ error: "fileName and fileSize required" }, { status: 400 });
@@ -20,7 +31,8 @@ export async function POST(req: NextRequest) {
 
     const ext = path.extname(fileName) || ".mp4";
     const allowedExts = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg"];
-    if (!allowedExts.includes(ext.toLowerCase())) {
+    const isTypeValid = ALLOWED_TYPES.includes(fileType || "") || allowedExts.includes(ext.toLowerCase());
+    if (!isTypeValid) {
       return NextResponse.json({ error: "Unsupported file format" }, { status: 400 });
     }
 
@@ -28,7 +40,11 @@ export async function POST(req: NextRequest) {
     const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
     const uploadDir = path.join(UPLOADS_DIR, session.userId, uploadId);
 
-    await mkdir(path.join(uploadDir, "chunks"), { recursive: true });
+    try {
+      await mkdir(path.join(uploadDir, "chunks"), { recursive: true });
+    } catch (err: any) {
+      return NextResponse.json({ error: `Failed to create upload directory: ${err.message}` }, { status: 500 });
+    }
 
     const meta = {
       uploadId,
@@ -41,8 +57,12 @@ export async function POST(req: NextRequest) {
       createdAt: Date.now(),
     };
 
-    await writeFile(path.join(uploadDir, "meta.json"), JSON.stringify(meta));
-    await writeFile(path.join(uploadDir, "status.json"), JSON.stringify({ completed: [] }));
+    try {
+      await writeFile(path.join(uploadDir, "meta.json"), JSON.stringify(meta));
+      await writeFile(path.join(uploadDir, "status.json"), JSON.stringify({ completed: [] }));
+    } catch (err: any) {
+      return NextResponse.json({ error: `Failed to save upload state: ${err.message}` }, { status: 500 });
+    }
 
     return NextResponse.json({
       uploadId,
@@ -51,6 +71,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     console.error("Upload init error:", error);
-    return NextResponse.json({ error: "Init failed" }, { status: 500 });
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return NextResponse.json({ error: `Init failed: ${message}` }, { status: 500 });
   }
 }

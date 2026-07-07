@@ -357,19 +357,27 @@ export default function DashboardPage() {
             fileType: entry.file.type,
           }),
         });
-        const initData = await initRes.json();
+        let initData: any;
+        try {
+          initData = await initRes.json();
+        } catch {
+          setUploads(prev => prev.map(u =>
+            u.id === entry.id ? { ...u, status: "error", error: `Server returned ${initRes.status}: not valid JSON` } : u
+          ));
+          return;
+        }
         if (!initData.uploadId) {
           setUploads(prev => prev.map(u =>
-            u.id === entry.id ? { ...u, status: "error", error: initData.error || "Init failed" } : u
+            u.id === entry.id ? { ...u, status: "error", error: initData.error || `Server error (${initRes.status})` } : u
           ));
           return;
         }
         uploadId = initData.uploadId;
         chunkSize = initData.chunkSize;
         totalChunks = initData.totalChunks;
-      } catch {
+      } catch (err: any) {
         setUploads(prev => prev.map(u =>
-          u.id === entry.id ? { ...u, status: "error", error: "Init failed" } : u
+          u.id === entry.id ? { ...u, status: "error", error: `Init failed: ${err?.message || "Network error"}` } : u
         ));
         return;
       }
@@ -412,8 +420,9 @@ export default function DashboardPage() {
   const addFileToQueue = async (file: File) => {
     const validationError = validateFile(file);
     if (validationError) {
-      const entry: UploadEntry = {
-        id: crypto.randomUUID(),
+      const entryId = crypto.randomUUID();
+      setUploads(prev => [...prev, {
+        id: entryId,
         file,
         progress: 0,
         uploadedBytes: 0,
@@ -424,25 +433,25 @@ export default function DashboardPage() {
         totalChunks: Math.ceil(file.size / CHUNK_SIZE),
         completedChunks: 0,
         currentChunkIndex: 0,
-        status: "error",
+        status: "error" as const,
         validationError,
-      };
-      setUploads(prev => [...prev, entry]);
+      }]);
       setTimeout(() => {
-        setUploads(prev => prev.filter(u => u.id === entry.id));
+        setUploads(prev => prev.filter(u => u.id === entryId));
       }, 5000);
       return;
     }
 
-    const duplicate = uploads.some(
-      u => u.file.name === file.name && u.file.size === file.size && u.status !== "error"
-    );
-    if (duplicate) return;
-
+    const entryId = crypto.randomUUID();
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
-    const entry: UploadEntry = {
-      id: crypto.randomUUID(),
+    const hasDuplicate = uploads.some(
+      u => u.file.name === file.name && u.file.size === file.size && u.status !== "error"
+    );
+    if (hasDuplicate) return;
+
+    setUploads(prev => [...prev, {
+      id: entryId,
       file,
       progress: 0,
       uploadedBytes: 0,
@@ -453,17 +462,29 @@ export default function DashboardPage() {
       totalChunks,
       completedChunks: 0,
       currentChunkIndex: 0,
-      status: "queued",
-    };
-
-    setUploads(prev => [...prev, { ...entry }]);
+      status: "queued" as const,
+    }]);
 
     const metadata = await extractVideoMetadata(file);
     setUploads(prev => prev.map(u =>
-      u.id === entry.id ? { ...u, metadata } : u
+      u.id === entryId ? { ...u, metadata } : u
     ));
 
-    startUpload({ ...entry, metadata });
+    startUpload({
+      id: entryId,
+      file,
+      progress: 0,
+      uploadedBytes: 0,
+      speed: 0,
+      avgSpeed: 0,
+      eta: 0,
+      chunkSize: CHUNK_SIZE,
+      totalChunks,
+      completedChunks: 0,
+      currentChunkIndex: 0,
+      status: "queued" as const,
+      metadata,
+    });
   };
 
   const handleFileSelect = (files: FileList | null) => {
