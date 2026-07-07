@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   Subtitles, Upload, Search, Plus, MoreHorizontal, Star, Trash2,
   Edit3, Clock, Grid3X3, List, FileVideo, LogOut,
-  FolderOpen, Archive, Heart, LayoutDashboard, Menu, X,
+  Archive, Heart, LayoutDashboard, Menu, X,
   Pause, Play, AlertCircle, CheckCircle2, RotateCcw, Film,
   Replace, Maximize2
 } from "lucide-react";
@@ -44,16 +44,17 @@ interface UploadEntry {
   status: 'queued' | 'uploading' | 'paused' | 'completed' | 'error';
   error?: string;
   validationError?: string;
-  xhr?: XMLHttpRequest;
   metadata?: VideoMetadata;
+  uploadId?: string;
+  chunkSize: number;
+  totalChunks: number;
+  completedChunks: number;
+  currentChunkIndex: number;
+  activeChunkXhr?: XMLHttpRequest;
 }
 
-const ALLOWED_TYPES = [
-  "video/mp4", "video/quicktime", "video/x-msvideo",
-  "video/x-matroska", "video/webm", "video/mpeg",
-];
 const ALLOWED_EXTENSIONS = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg"];
-const MAX_SIZE = 500 * 1024 * 1024;
+const CHUNK_SIZE = 5 * 1024 * 1024;
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -67,6 +68,9 @@ export default function DashboardPage() {
   const [uploads, setUploads] = useState<UploadEntry[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState<string | null>(null);
+  const completedChunksRef = useRef<Map<string, Set<number>>>(new Map());
+  const uploadActiveRef = useRef<Map<string, boolean>>(new Map());
+  const uploadStartTimeRef = useRef<Map<string, number>>(new Map());
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -136,88 +140,273 @@ export default function DashboardPage() {
 
   const validateFile = (file: File): string | null => {
     const ext = "." + file.name.split(".").pop()?.toLowerCase();
-    const isTypeValid = ALLOWED_TYPES.includes(file.type) || ALLOWED_EXTENSIONS.includes(ext);
+    const isTypeValid = ALLOWED_EXTENSIONS.includes(ext);
     if (!isTypeValid) return "Unsupported format. Use MP4, MOV, MKV, AVI, or WebM.";
-    if (file.size > MAX_SIZE) return "File exceeds 500MB limit.";
     if (file.size === 0) return "File is empty.";
     return null;
   };
 
-  const startUpload = (entry: UploadEntry) => {
-    const xhr = new XMLHttpRequest();
-    let startTime = Date.now();
-    let lastLoaded = 0;
-    let lastTime = Date.now();
+  const computeChecksum = async (blob: Blob): Promise<string> => {
+    const buffer = await blob.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
 
-    xhr.upload.onprogress = (e) => {
-      if (!e.lengthComputable) return;
-      const now = Date.now();
-      const loaded = e.loaded;
-      const total = e.total;
-      const percent = Math.round((loaded / total) * 100);
-      const elapsed = (now - startTime) / 1000;
-      const timeDiff = (now - lastTime) / 1000;
-      const currentSpeed = timeDiff > 0 ? (loaded - lastLoaded) / timeDiff : 0;
-      const avgSpeed = elapsed > 0 ? loaded / elapsed : 0;
-      const remaining = total - loaded;
-      const eta = avgSpeed > 0 ? remaining / avgSpeed : 0;
+  const updateProgress = (entryId: string) => {
+    const entry = uploads.find(u => u.id === entryId);
+    if (!entry) return;
 
-      lastLoaded = loaded;
-      lastTime = now;
-
-      setUploads(prev => prev.map(u =>
-        u.id === entry.id ? {
-          ...u,
-          progress: percent,
-          uploadedBytes: loaded,
-          speed: currentSpeed,
-          avgSpeed,
-          eta,
-        } : u
-      ));
-    };
-
-    xhr.onload = () => {
-      try {
-        const data = JSON.parse(xhr.responseText);
-        if (data.project) {
-          setUploads(prev => prev.map(u =>
-            u.id === entry.id ? { ...u, status: "completed", progress: 100 } : u
-          ));
-          setTimeout(() => {
-            setUploads(prev => prev.filter(u => u.id !== entry.id));
-            router.push(`/editor/${data.project.id}`);
-          }, 800);
-        } else {
-          setUploads(prev => prev.map(u =>
-            u.id === entry.id ? { ...u, status: "error", error: data.error || "Upload failed" } : u
-          ));
-        }
-      } catch {
-        setUploads(prev => prev.map(u =>
-          u.id === entry.id ? { ...u, status: "error", error: "Upload failed" } : u
-        ));
-      }
-    };
-
-    xhr.onerror = () => {
-      setUploads(prev => prev.map(u =>
-        u.id === entry.id ? { ...u, status: "error", error: "Upload failed" } : u
-      ));
-    };
-
-    xhr.onabort = () => {
-      // status already updated by pause/cancel
-    };
-
-    const formData = new FormData();
-    formData.append("file", entry.file);
-    xhr.open("POST", "/api/upload");
-    xhr.send(formData);
+    const completed = completedChunksRef.current.get(entryId)?.size || 0;
+    const uploadedBytes = completed * entry.chunkSize;
+    const percent = Math.round((uploadedBytes / entry.file.size) * 100);
+    const elapsed = (Date.now() - (uploadStartTimeRef.current.get(entryId) || Date.now())) / 1000;
+    const avgSpeed = elapsed > 0 ? uploadedBytes / elapsed : 0;
+    const remaining = entry.file.size - uploadedBytes;
+    const eta = avgSpeed > 0 ? remaining / avgSpeed : 0;
 
     setUploads(prev => prev.map(u =>
-      u.id === entry.id ? { ...u, status: "uploading", progress: 0, uploadedBytes: 0, speed: 0, avgSpeed: 0, eta: 0, xhr, error: undefined } : u
+      u.id === entryId ? {
+        ...u,
+        progress: Math.min(percent, 99),
+        uploadedBytes,
+        avgSpeed,
+        eta,
+        completedChunks: completed,
+      } : u
     ));
+  };
+
+  const uploadSingleChunk = (
+    entryId: string,
+    uploadId: string,
+    chunkIndex: number,
+    checksum: string,
+    chunk: Blob,
+    totalBytes: number
+  ): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const chunkStart = Date.now();
+      let lastLoaded = 0;
+
+      xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable) return;
+        const entry = uploads.find(u => u.id === entryId);
+        if (!entry) return;
+        const completed = completedChunksRef.current.get(entryId)?.size || 0;
+        const uploadedBytes = completed * entry.chunkSize + e.loaded;
+        const percent = Math.round((uploadedBytes / totalBytes) * 100);
+        const now = Date.now();
+        const elapsed = (now - (uploadStartTimeRef.current.get(entryId) || now)) / 1000;
+        const timeDiff = (now - chunkStart) / 1000;
+        const currentSpeed = timeDiff > 0 ? (completed * entry.chunkSize + e.loaded - lastLoaded) / timeDiff : 0;
+        const avgSpeed = elapsed > 0 ? uploadedBytes / elapsed : 0;
+        const remaining = totalBytes - uploadedBytes;
+        const eta = avgSpeed > 0 ? remaining / avgSpeed : 0;
+        lastLoaded = completed * entry.chunkSize + e.loaded;
+
+        setUploads(prev => prev.map(u =>
+          u.id === entryId ? {
+            ...u,
+            progress: Math.min(percent, 99),
+            uploadedBytes,
+            speed: currentSpeed,
+            avgSpeed,
+            eta,
+          } : u
+        ));
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(new Error("Chunk upload failed"));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"));
+
+      const formData = new FormData();
+      formData.append("uploadId", uploadId);
+      formData.append("chunkIndex", chunkIndex.toString());
+      formData.append("checksum", checksum);
+      formData.append("chunk", chunk);
+
+      xhr.open("POST", "/api/upload/chunk");
+      xhr.send(formData);
+
+      setUploads(prev => prev.map(u =>
+        u.id === entryId ? { ...u, activeChunkXhr: xhr, currentChunkIndex: chunkIndex } : u
+      ));
+    });
+  };
+
+  const uploadAllChunks = async (entryId: string) => {
+    const entry = uploads.find(u => u.id === entryId);
+    if (!entry || !entry.uploadId) return;
+
+    uploadActiveRef.current.set(entryId, true);
+    const { uploadId, file, chunkSize, totalChunks } = entry;
+
+    if (!completedChunksRef.current.has(entryId)) {
+      completedChunksRef.current.set(entryId, new Set());
+    }
+    const completedSet = completedChunksRef.current.get(entryId)!;
+
+    for (let i = 0; i < totalChunks; i++) {
+      if (!uploadActiveRef.current.get(entryId)) break;
+      if (completedSet.has(i)) continue;
+
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, file.size);
+      const chunk = file.slice(start, end);
+
+      let checksum: string;
+      try {
+        checksum = await computeChecksum(chunk);
+      } catch {
+        setUploads(prev => prev.map(u =>
+          u.id === entryId ? { ...u, status: "error", error: "Failed to process chunk" } : u
+        ));
+        return;
+      }
+
+      const currentEntry = uploads.find(u => u.id === entryId);
+      if (!currentEntry || currentEntry.status === "paused" || !uploadActiveRef.current.get(entryId)) break;
+
+      let success = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (!uploadActiveRef.current.get(entryId)) break;
+        try {
+          await uploadSingleChunk(entryId, uploadId, i, checksum, chunk, file.size);
+          success = true;
+          break;
+        } catch (err: any) {
+          if (err.name === "AbortError") {
+            uploadActiveRef.current.set(entryId, false);
+            return;
+          }
+          if (attempt === 2) {
+            setUploads(prev => prev.map(u =>
+              u.id === entryId ? { ...u, status: "error", error: `Chunk ${i + 1}/${totalChunks} failed after 3 attempts` } : u
+            ));
+            uploadActiveRef.current.set(entryId, false);
+            return;
+          }
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+
+      if (success) {
+        completedSet.add(i);
+        updateProgress(entryId);
+      }
+    }
+
+    if (!uploadActiveRef.current.get(entryId)) return;
+
+    try {
+      const res = await fetch(`/api/upload/${uploadId}/complete`, { method: "POST" });
+      const data = await res.json();
+
+      if (data.project) {
+        completedChunksRef.current.delete(entryId);
+        uploadStartTimeRef.current.delete(entryId);
+        setUploads(prev => prev.filter(u => u.id !== entryId));
+        router.push(`/editor/${data.project.id}`);
+      } else {
+        setUploads(prev => prev.map(u =>
+          u.id === entryId ? { ...u, status: "error", error: data.error || "Failed to finalize" } : u
+        ));
+      }
+    } catch {
+      setUploads(prev => prev.map(u =>
+        u.id === entryId ? { ...u, status: "error", error: "Failed to finalize upload" } : u
+      ));
+    }
+
+    uploadActiveRef.current.delete(entryId);
+  };
+
+  const startUpload = async (entry: UploadEntry) => {
+    uploadStartTimeRef.current.set(entry.id, Date.now());
+
+    if (!completedChunksRef.current.has(entry.id)) {
+      completedChunksRef.current.set(entry.id, new Set());
+    }
+
+    setUploads(prev => prev.map(u =>
+      u.id === entry.id ? { ...u, status: "queued" } : u
+    ));
+
+    let uploadId = entry.uploadId;
+    let chunkSize = entry.chunkSize;
+    let totalChunks = entry.totalChunks;
+
+    if (!uploadId) {
+      try {
+        const initRes = await fetch("/api/upload/init", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileName: entry.file.name,
+            fileSize: entry.file.size,
+            fileType: entry.file.type,
+          }),
+        });
+        const initData = await initRes.json();
+        if (!initData.uploadId) {
+          setUploads(prev => prev.map(u =>
+            u.id === entry.id ? { ...u, status: "error", error: initData.error || "Init failed" } : u
+          ));
+          return;
+        }
+        uploadId = initData.uploadId;
+        chunkSize = initData.chunkSize;
+        totalChunks = initData.totalChunks;
+      } catch {
+        setUploads(prev => prev.map(u =>
+          u.id === entry.id ? { ...u, status: "error", error: "Init failed" } : u
+        ));
+        return;
+      }
+    } else {
+      try {
+        const statusRes = await fetch(`/api/upload/${uploadId}`);
+        const statusData = await statusRes.json();
+        if (statusData.completed) {
+          const set = new Set<number>(statusData.completed);
+          completedChunksRef.current.set(entry.id, set);
+        }
+        chunkSize = statusData.chunkSize || entry.chunkSize;
+        totalChunks = statusData.totalChunks || entry.totalChunks;
+      } catch {
+        // proceed without restore
+      }
+    }
+
+    const completed = completedChunksRef.current.get(entry.id)?.size || 0;
+    const uploadedBytes = completed * chunkSize;
+
+    setUploads(prev => prev.map(u =>
+      u.id === entry.id ? {
+        ...u,
+        status: "uploading",
+        uploadId,
+        chunkSize,
+        totalChunks,
+        completedChunks: completed,
+        currentChunkIndex: completed,
+        uploadedBytes,
+        progress: Math.round((uploadedBytes / entry.file.size) * 100),
+        error: undefined,
+      } : u
+    ));
+
+    uploadAllChunks(entry.id);
   };
 
   const addFileToQueue = async (file: File) => {
@@ -231,6 +420,10 @@ export default function DashboardPage() {
         speed: 0,
         avgSpeed: 0,
         eta: 0,
+        chunkSize: CHUNK_SIZE,
+        totalChunks: Math.ceil(file.size / CHUNK_SIZE),
+        completedChunks: 0,
+        currentChunkIndex: 0,
         status: "error",
         validationError,
       };
@@ -246,6 +439,8 @@ export default function DashboardPage() {
     );
     if (duplicate) return;
 
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
     const entry: UploadEntry = {
       id: crypto.randomUUID(),
       file,
@@ -254,6 +449,10 @@ export default function DashboardPage() {
       speed: 0,
       avgSpeed: 0,
       eta: 0,
+      chunkSize: CHUNK_SIZE,
+      totalChunks,
+      completedChunks: 0,
+      currentChunkIndex: 0,
       status: "queued",
     };
 
@@ -274,23 +473,38 @@ export default function DashboardPage() {
     }
   };
 
-  const replaceFile = (id: string, file: File) => {
+  const replaceFile = async (id: string, file: File) => {
     const entry = uploads.find(u => u.id === id);
     if (!entry) return;
 
-    if (entry.xhr) {
-      entry.xhr.abort();
+    uploadActiveRef.current.set(id, false);
+
+    if (entry.activeChunkXhr) {
+      entry.activeChunkXhr.abort();
     }
 
+    if (entry.uploadId) {
+      try {
+        await fetch(`/api/upload/${entry.uploadId}`, { method: "DELETE" });
+      } catch {}
+    }
+
+    completedChunksRef.current.delete(id);
+    uploadStartTimeRef.current.delete(id);
     setUploads(prev => prev.filter(u => u.id !== id));
     addFileToQueue(file);
   };
 
   const pauseUpload = (id: string) => {
     const entry = uploads.find(u => u.id === id);
-    if (!entry || !entry.xhr) return;
+    if (!entry) return;
 
-    entry.xhr.abort();
+    uploadActiveRef.current.set(id, false);
+
+    if (entry.activeChunkXhr) {
+      entry.activeChunkXhr.abort();
+    }
+
     setUploads(prev => prev.map(u =>
       u.id === id ? { ...u, status: "paused" } : u
     ));
@@ -299,26 +513,52 @@ export default function DashboardPage() {
   const resumeUpload = (id: string) => {
     const entry = uploads.find(u => u.id === id);
     if (!entry) return;
-    const resumed = { ...entry, status: "queued" as const, xhr: undefined };
-    setUploads(prev => prev.map(u => u.id === id ? resumed : u));
-    startUpload(resumed);
+
+    const completed = completedChunksRef.current.get(id)?.size || 0;
+    setUploads(prev => prev.map(u =>
+      u.id === id ? { ...u, status: "queued", activeChunkXhr: undefined } : u
+    ));
+
+    startUpload(entry);
   };
 
-  const cancelUpload = (id: string) => {
+  const cancelUpload = async (id: string) => {
     const entry = uploads.find(u => u.id === id);
     if (!entry) return;
 
-    if (entry.xhr) {
-      entry.xhr.abort();
+    uploadActiveRef.current.set(id, false);
+
+    if (entry.activeChunkXhr) {
+      entry.activeChunkXhr.abort();
     }
 
+    if (entry.uploadId) {
+      try {
+        await fetch(`/api/upload/${entry.uploadId}`, { method: "DELETE" });
+      } catch {}
+    }
+
+    completedChunksRef.current.delete(id);
+    uploadStartTimeRef.current.delete(id);
     setUploads(prev => prev.filter(u => u.id !== id));
   };
 
   const retryUpload = (id: string) => {
     const entry = uploads.find(u => u.id === id);
     if (!entry) return;
-    const retried = { ...entry, status: "queued" as const, xhr: undefined, progress: 0, uploadedBytes: 0, speed: 0, avgSpeed: 0, eta: 0, error: undefined };
+
+    const completed = completedChunksRef.current.get(id)?.size || 0;
+    const retried = {
+      ...entry,
+      status: "queued" as const,
+      activeChunkXhr: undefined,
+      progress: 0,
+      uploadedBytes: 0,
+      speed: 0,
+      avgSpeed: 0,
+      eta: 0,
+      error: undefined,
+    };
     setUploads(prev => prev.map(u => u.id === id ? retried : u));
     startUpload(retried);
   };
@@ -413,16 +653,20 @@ export default function DashboardPage() {
     exported: "bg-purple-500/20 text-purple-400",
   };
 
+  const chunkInfo = (entry: UploadEntry): string => {
+    if (entry.totalChunks <= 1) return "";
+    const done = completedChunksRef.current.get(entry.id)?.size || entry.completedChunks;
+    return `${done}/${entry.totalChunks} chunks`;
+  };
+
   if (!user) return null;
 
   return (
     <div className="min-h-screen flex bg-[#0a0a1a]">
-      {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
-      {/* Sidebar */}
       <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-64 glass border-r border-white/5 flex flex-col transform transition-transform lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`}>
         <div className="p-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -475,14 +719,12 @@ export default function DashboardPage() {
         </div>
       </aside>
 
-      {/* Main Content */}
       <main
         className="flex-1 min-h-screen relative"
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        {/* Top Bar */}
         <header className="sticky top-0 z-30 glass border-b border-white/5 px-4 sm:px-6 py-4">
           <div className="flex items-center gap-4">
             <button className="lg:hidden" onClick={() => setSidebarOpen(true)}>
@@ -507,25 +749,22 @@ export default function DashboardPage() {
           </div>
         </header>
 
-        {/* Drag overlay */}
         {isDragOver && (
           <div className="absolute inset-0 z-50 m-4 rounded-2xl border-2 border-dashed border-indigo-400 bg-indigo-500/10 backdrop-blur-sm flex items-center justify-center">
             <div className="text-center">
               <Upload className="w-16 h-16 text-indigo-400 mx-auto mb-4 animate-bounce" />
               <p className="text-xl font-semibold text-indigo-300">Drop videos here</p>
-              <p className="text-sm text-[var(--muted)] mt-2">MP4, MOV, AVI, MKV, WebM up to 500MB each</p>
+              <p className="text-sm text-[var(--muted)] mt-2">MP4, MOV, AVI, MKV, WebM</p>
             </div>
           </div>
         )}
 
         <div className="p-4 sm:p-6">
-          {/* Upload queue */}
           {uploads.length > 0 && (
             <div className="space-y-3 mb-6">
               {uploads.map((entry) => (
                 <div key={entry.id} className="glass rounded-2xl p-4">
                   <div className="flex items-start gap-4">
-                    {/* Thumbnail */}
                     <div className={`w-28 h-16 rounded-lg flex-shrink-0 overflow-hidden bg-white/5 ${entry.metadata?.thumbnail ? "" : "flex items-center justify-center"}`}>
                       {entry.metadata?.thumbnail ? (
                         <img src={entry.metadata.thumbnail} alt="" className="w-full h-full object-cover" />
@@ -536,28 +775,30 @@ export default function DashboardPage() {
                       )}
                     </div>
 
-                    {/* Details */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="text-sm font-medium truncate max-w-[260px]">{entry.file.name}</div>
 
-                          {/* Validation/error */}
                           {entry.validationError ? (
                             <div className="text-xs text-red-400 mt-1">{entry.validationError}</div>
                           ) : entry.error ? (
                             <div className="text-xs text-red-400 mt-1">{entry.error}</div>
                           ) : entry.status === "uploading" ? (
-                            /* Real-time progress stats */
                             <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-xs text-[var(--muted)]">
                               <span className="text-indigo-400 font-medium">{entry.progress}%</span>
                               <span>{formatFileSize(entry.uploadedBytes)} / {formatFileSize(entry.file.size)}</span>
                               <span className="text-green-400/80">{formatSpeed(entry.speed)}</span>
                               <span className="text-green-400/80">avg {formatSpeed(entry.avgSpeed)}</span>
                               <span>ETA {formatETA(entry.eta)}</span>
+                              {entry.totalChunks > 1 && (
+                                <>
+                                  <span>·</span>
+                                  <span>{chunkInfo(entry)}</span>
+                                </>
+                              )}
                             </div>
                           ) : (
-                            /* Metadata info */
                             <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-xs text-[var(--muted)]">
                               <span>{formatFileSize(entry.file.size)}</span>
                               {entry.metadata && entry.metadata.duration > 0 && (
@@ -590,11 +831,16 @@ export default function DashboardPage() {
                                   <span>{formatBitrate(entry.metadata.bitrate)}</span>
                                 </>
                               )}
+                              {entry.totalChunks > 1 && (
+                                <>
+                                  <span>·</span>
+                                  <span>{entry.totalChunks} chunks</span>
+                                </>
+                              )}
                             </div>
                           )}
                         </div>
 
-                        {/* Status badge */}
                         <div className="flex items-center gap-1 flex-shrink-0">
                           <span className={`text-xs px-2 py-0.5 rounded-md whitespace-nowrap ${
                             entry.status === "completed" ? "bg-green-500/20 text-green-400" :
@@ -613,7 +859,6 @@ export default function DashboardPage() {
                         </div>
                       </div>
 
-                      {/* Real progress bar */}
                       {(entry.status === "uploading" || entry.status === "paused") && (
                         <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden mt-2">
                           <div className={`h-full rounded-full transition-all duration-200 ${
@@ -623,7 +868,6 @@ export default function DashboardPage() {
                       )}
                     </div>
 
-                    {/* Actions */}
                     <div className="flex items-center gap-1 flex-shrink-0">
                       {entry.status === "uploading" && (
                         <button onClick={() => pauseUpload(entry.id)} className="p-2 rounded-lg hover:bg-white/10 text-[var(--muted)] hover:text-yellow-400 transition" title="Pause">
@@ -656,7 +900,7 @@ export default function DashboardPage() {
                         </label>
                       )}
                       {entry.status !== "completed" && (
-                        <button onClick={() => cancelUpload(entry.id)} className="p-2 rounded-lg hover:bg-white/10 text-[var(--muted)] hover:text-red-400 transition" title="Remove">
+                        <button onClick={() => cancelUpload(entry.id)} className="p-2 rounded-lg hover:bg-white/10 text-[var(--muted)] hover:text-red-400 transition" title="Cancel">
                           <X className="w-4 h-4" />
                         </button>
                       )}
@@ -667,7 +911,6 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Empty State */}
           {!loading && projects.length === 0 && (
             <div className="flex flex-col items-center justify-center py-20">
               <div className="w-20 h-20 rounded-2xl bg-indigo-500/10 flex items-center justify-center mb-6">
@@ -683,7 +926,6 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Project Grid */}
           {projects.length > 0 && viewMode === "grid" && (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {projects.map((p) => (
@@ -732,7 +974,6 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Project List */}
           {projects.length > 0 && viewMode === "list" && (
             <div className="space-y-2">
               {projects.map((p) => (
