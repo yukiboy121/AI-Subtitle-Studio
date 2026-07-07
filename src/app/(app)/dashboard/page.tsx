@@ -966,8 +966,8 @@ export default function DashboardPage() {
           {projects.length > 0 && viewMode === "grid" && (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {projects.map((p) => (
-                <div key={p.id} className="group glass rounded-2xl overflow-hidden hover:border-indigo-500/30 transition-all cursor-pointer" onClick={() => router.push(`/editor/${p.id}`)}>
-                  <div className="aspect-video bg-gradient-to-br from-indigo-500/20 to-purple-500/20 relative flex items-center justify-center">
+                <div key={p.id} className="group glass rounded-2xl relative hover:border-indigo-500/30 transition-all cursor-pointer" onClick={() => router.push(`/editor/${p.id}`)}>
+                  <div className="aspect-video rounded-t-2xl overflow-hidden bg-gradient-to-br from-indigo-500/20 to-purple-500/20 relative flex items-center justify-center">
                     <FileVideo className="w-12 h-12 text-white/20" />
                     <div className="absolute top-2 right-2 flex gap-1">
                       <button
